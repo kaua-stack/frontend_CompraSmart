@@ -1,521 +1,390 @@
-import React, { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import { useLists } from "@/contexts/ListContext";
+import { AlertCircle, AlertTriangle, Check, Loader2, Minus, Plus, Search, ShoppingBag, Store, Trash2, X } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
+import MarketComparisonModal from "@/components/MarketComparisonModal";
 import api from "@/services/api";
-
-// Função utilitária global do sistema para tentar agrupar produtos pelo nome ("Fruta", "Higiene")
+import { useLists } from "@/contexts/ListContext";
 import { CATEGORY_MAP, getCategory } from "@/utils/categoryMap";
 
-import {
-  Trash2,
-  Plus,
-  Minus,
-  Target,
-  ShoppingBag,
-  AlertCircle,
-  X,
-  AlertTriangle,
-} from "lucide-react";
-
-// =========================================================================
-// INTELIGÊNCIA ESTÁTICA - MAPA DE ALERGIAS DA PLATAFORMA
-// =========================================================================
-// Esta lista dita gatilhos comuns de ingredientes perigosos para as condições selecionadas.
 const ALLERGY_MAP = {
-  Lactose: [
-    "leite", "queijo", "iogurte", "manteiga", "requeijão", 
-    "creme de", "whey", "pudim", "condensado", "coalhada",
-    "ricota", "muçarela", "margarina", "achocolatado",
-  ],
-  Glúten: [
-    "pão", "farinha", "macarrão", "cerveja", "biscoito",
-    "bolacha", "bolo", "pizza", "salgadinho", "coxinha",
-    "pastel", "espaguete", "quibe", "cevada", "malte",
-  ],
-  Vegetariano: [
-    "carne", "frango", "peixe", "bacon", "presunto", "salsicha",
-    "hambúrguer", "steak", "linguiça", "salame", "mortadela",
-    "picanha", "costela", "nugget", "calabresa", "peru", "lombo",
-  ],
-  Vegano: [
-    "carne", "frango", "peixe", "ovo", "leite", "mel", "queijo",
-    "manteiga", "bacon", "iogurte", "presunto", "gelatina", "maionese",
-  ],
-  Amendoim: [
-    "paçoca", "amendoim", "nucita", "pé de moleque", "castanha",
-    "noz", "avelã", "pistache", "nutella", "amêndoa",
-  ],
-  Açúcar: [
-    "refrigerante", "doce", "chocolate", "bala", "recheado",
-    "sorvete", "açúcar", "caramelo", "xarope", "goiabada",
-  ],
-  "Frutos do Mar": [
-    "camarão", "lagosta", "siri", "caranguejo", "ostra",
-    "lula", "polvo", "mexilhão",
-  ],
+  Lactose: ["leite", "queijo", "iogurte", "manteiga", "requeijão", "creme de", "whey"],
+  Glúten: ["pão", "farinha", "macarrão", "cerveja", "biscoito", "bolacha", "bolo"],
+  Vegetariano: ["carne", "frango", "peixe", "bacon", "presunto", "salsicha", "linguiça"],
+  Vegano: ["carne", "frango", "peixe", "ovo", "leite", "mel", "queijo", "manteiga"],
+  Amendoim: ["paçoca", "amendoim", "castanha", "noz", "avelã", "pistache", "nutella"],
 };
 
-// =========================================================================
-// PÁGINA: DETALHES DA LISTA (ListDetailsPage)
-// Onde o usuário de fato insere os produtos que vai comprar no supermercado.
-// =========================================================================
+function formatCurrency(value) {
+  return `R$ ${Number(value || 0).toFixed(2).replace(".", ",")}`;
+}
+
+function displayPrice(product) {
+  if (product?.effectivePrice === null || product?.effectivePrice === undefined) return "Preço não informado";
+  return formatCurrency(product.effectivePrice);
+}
+
 export default function ListDetailsPage() {
-  const { id } = useParams(); // Hook do React-Router pra pegar via URL qual abaerta.
+  const { id } = useParams();
+  const {
+    lists,
+    searchProducts,
+    addItemToList,
+    updateItemQuantity,
+    toggleItemStatus,
+    deleteItem,
+    compareList,
+  } = useLists();
 
-  // Funções fornecidas pelo contexto global ligado à sua API Backend 
-  const { lists, addItemToList, toggleItemStatus, deleteItem } = useLists();
-  
-  // Stados locais visuais 
-  const [list, setList] = useState(null); // Essa é a lista atual isolada
-  const [newItem, setNewItem] = useState({ name: "", quantity: 1, price: "" }); // Formulário provisório
-  const [showWarning, setShowWarning] = useState(true); // Alvo estourou limite financeiro?
-
-  // Lógica de restrições por saúde 
+  const [list, setList] = useState(null);
+  const [newItem, setNewItem] = useState({ name: "", quantity: 1, price: "", productId: null, category: null, unit: null });
+  const [suggestions, setSuggestions] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [showWarning, setShowWarning] = useState(true);
   const [userAllergies, setUserAllergies] = useState([]);
-  const [allergyConflict, setAllergyConflict] = useState(null); // Guarada "Lactose" se detecar leite
+  const [allergyConflict, setAllergyConflict] = useState(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [savingItem, setSavingItem] = useState(false);
+  const [comparison, setComparison] = useState(null);
+  const [comparisonOpen, setComparisonOpen] = useState(false);
+  const [comparisonLoading, setComparisonLoading] = useState(false);
+  const [comparisonError, setComparisonError] = useState("");
+  const [selectedMarkets, setSelectedMarkets] = useState([]);
 
-  // =========================================================================
-  // 1. CARREGAMENTO INICIAL 
-  // Busca a lista atual em tela && as alergias cadastradas na DB
-  // =========================================================================
   useEffect(() => {
-    // 1(a) Busca a lista corrente
-    const found = lists.find((l) => l._id === id);
+    const found = lists.find((currentList) => String(currentList._id || currentList.id) === String(id));
     if (found) setList(found);
-
-    // 1(b) Busca se o user tem restrições cadastradas via backend para usar.
-    const fetchAllergies = async () => {
-      try {
-        const { data } = await api.get("/users/profile");
-        setUserAllergies(data.allergies || []);
-      } catch (err) {
-        console.error("Erro ao carregar alergias", err);
-      }
-    };
-    fetchAllergies();
   }, [lists, id]);
 
-  // =========================================================================
-  // 2. DETECTOR (MOTOR DE BUSCA)
-  // Reage sempre que o usuário digita uma letrinha Nova!
-  // =========================================================================
+  useEffect(() => {
+    let active = true;
+    api.get("/users/profile")
+      .then(({ data }) => {
+        if (active) setUserAllergies(data.allergies || []);
+      })
+      .catch(() => {
+        if (active) setUserAllergies([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const query = newItem.name.trim();
+    if (query.length < 2 || newItem.productId) {
+      setSuggestions([]);
+      setSearching(false);
+      return undefined;
+    }
+
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      setSearching(true);
+      try {
+        const products = await searchProducts(query, 10);
+        if (active) {
+          setSuggestions(products);
+          setShowSuggestions(true);
+        }
+      } catch (error) {
+        if (active) setSuggestions([]);
+      } finally {
+        if (active) setSearching(false);
+      }
+    }, 280);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [newItem.name, newItem.productId]);
+
   useEffect(() => {
     const input = newItem.name.toLowerCase().trim();
-    if (input.length < 2) return setAllergyConflict(null); // só pesquisa se tiver no min 2 letras
+    if (input.length < 2) {
+      setAllergyConflict(null);
+      return;
+    }
 
     let found = null;
     userAllergies.forEach((allergy) => {
       const allergyName = typeof allergy === "string" ? allergy : allergy.name;
-      const allergyNorm = allergyName.toLowerCase();
-      // O Array de derivados
+      if (!allergyName) return;
+      const normalized = allergyName.toLowerCase();
       const derivatives = ALLERGY_MAP[allergyName] || [];
-      
-      // Checa se o usuário digitou algum derivado (ex: "leite") OU o nome da alerga em si ("lactose")
-      if (
-        derivatives.some((d) => input.includes(d)) ||
-        input.includes(allergyNorm) ||
-        (allergyNorm.includes(input) && input.length > 3)
-      ) {
+      if (derivatives.some((term) => input.includes(term)) || input.includes(normalized)) {
         found = allergyName;
       }
     });
     setAllergyConflict(found);
   }, [newItem.name, userAllergies]);
 
-  // Carregamento Preventivo
-  if (!list)
+  const items = list?.items || [];
+  const totalItems = items.length;
+  const checkedItems = items.filter((item) => item.checked).length;
+  const progress = totalItems > 0 ? (checkedItems / totalItems) * 100 : 0;
+  const total = items.reduce((sum, item) => sum + (Number(item.price) || 0) * (Number(item.quantity) || 1), 0);
+  const budget = Number(list?.budget || 0);
+  const overBudget = budget > 0 && total > budget;
+
+  const groupedItems = useMemo(() => (
+    Object.keys(CATEGORY_MAP).concat("Outros").map((categoryName) => ({
+      categoryName,
+      items: items.filter((item) => (item.category || getCategory(item.name)) === categoryName),
+    })).filter((group) => group.items.length > 0)
+  ), [items]);
+
+  if (!list) {
     return (
-      <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center font-black text-slate-400 uppercase tracking-widest text-xs">
-        <span className="animate-pulse">Preparando check-out...</span>
+      <div className="flex min-h-screen items-center justify-center bg-[#F8FAFC] text-xs font-black uppercase tracking-widest text-slate-400">
+        <span className="animate-pulse">Preparando lista...</span>
       </div>
     );
+  }
 
-  // =========================================================================
-  // 3. FLUXO DE ADIÇÃO (Frontend -> Backend Contexto)
-  // =========================================================================
-  
-  // Tenta adicionar
-  const handleAddAttempt = (e) => {
-    e.preventDefault();
-    if (!newItem.name.trim()) return;
-    
-    // Se a máquina acusou que tem derivado de leite sendo que o cara tem lactosa, joga modal popup na cara dele
-    if (allergyConflict) setShowConfirmModal(true);
-    else confirmAdd(); // Caminho livre sem alergias.
+  const chooseSuggestion = (product) => {
+    setNewItem((current) => ({
+      ...current,
+      name: product.name,
+      productId: product.id,
+      price: product.effectivePrice ?? "",
+      category: product.category || getCategory(product.name),
+      unit: product.unit || null,
+    }));
+    setSuggestions([]);
+    setShowSuggestions(false);
   };
 
-  // Efetivação a adição após varrer (ou após ele confirmar no modal "Ok vou correr risco")
+  const handleNameChange = (value) => {
+    setNewItem((current) => ({
+      ...current,
+      name: value,
+      productId: null,
+      price: "",
+      category: null,
+      unit: null,
+    }));
+    setShowSuggestions(true);
+  };
+
   const confirmAdd = async () => {
-    const itemData = {
-      name: newItem.name.trim(),
-      quantity: Number(newItem.quantity) || 1,
-      // Troca vírgula pra ponto para o banco de dados salvar certinho matematicamente
-      price: Number(newItem.price.toString().replace(",", ".")) || 0,
-      // Executa o utilitário frontend que chuta de qual departamento aquele alimento pertence
-      category: getCategory(newItem.name),
-    };
-    
-    // Dispara a requisão via Context p/ seu Backend
-    await addItemToList(list._id, itemData);
-    
-    // Limpa a tela proxima digitação
-    setNewItem({ name: "", quantity: 1, price: "" });
-    setAllergyConflict(null);
-    setShowConfirmModal(false);
+    if (!newItem.name.trim() || savingItem) return;
+    setSavingItem(true);
+    try {
+      await addItemToList(list._id, {
+        ...newItem,
+        name: newItem.name.trim(),
+        quantity: Math.max(1, Number(newItem.quantity) || 1),
+        category: newItem.category || getCategory(newItem.name),
+      });
+      setNewItem({ name: "", quantity: 1, price: "", productId: null, category: null, unit: null });
+      setSuggestions([]);
+      setShowSuggestions(false);
+      setAllergyConflict(null);
+      setShowConfirmModal(false);
+    } catch (error) {
+      setComparisonError(error.response?.data?.error || "Não foi possível adicionar o produto.");
+    } finally {
+      setSavingItem(false);
+    }
   };
 
-  // Status Globais do Array
-  const items = list.items || [];
-  const totalItens = items.length;
-  const itensMarcados = items.filter((i) => i.checked).length;
-  // Regra de três pra achar a % da barra de preenchimento
-  const porcentagemItens = totalItens > 0 ? (itensMarcados / totalItens) * 100 : 0;
-  
-  // Somatória Dinâmica!
-  const totalGeral = items.reduce(
-    (acc, item) =>
-      acc + (Number(item.price) || 0) * (Number(item.quantity) || 1),
-    0
-  );
-  
-  const valorLimite = Number(list.budget || 0);
-  const ultrapassouLimite = valorLimite > 0 && totalGeral > valorLimite;
+  const handleAddAttempt = (event) => {
+    event.preventDefault();
+    if (!newItem.name.trim()) return;
+    if (allergyConflict) setShowConfirmModal(true);
+    else confirmAdd();
+  };
+
+  const changeQuantity = async (item, delta) => {
+    const nextQuantity = Math.max(1, Number(item.quantity) + delta);
+    try {
+      await updateItemQuantity(list._id, item._id, nextQuantity);
+    } catch (error) {
+      setComparisonError(error.response?.data?.error || "Não foi possível atualizar a quantidade.");
+    }
+  };
+
+  const openComparison = async (markets = null) => {
+    setComparisonOpen(true);
+    setComparisonLoading(true);
+    setComparisonError("");
+    try {
+      const result = await compareList(list._id, markets || selectedMarkets);
+      setComparison(result);
+      if (!markets) {
+        setSelectedMarkets((current) => current.length > 0 ? current : (result.availableMarkets || []).map((market) => market.source));
+      }
+    } catch (error) {
+      setComparisonError(error.response?.data?.error || "Não foi possível consultar os preços dos mercados.");
+    } finally {
+      setComparisonLoading(false);
+    }
+  };
+
+  const toggleMarket = (source) => {
+    setSelectedMarkets((current) => current.includes(source)
+      ? current.filter((market) => market !== source)
+      : [...current, source]);
+  };
 
   return (
-    <div className="max-w-2xl mx-auto p-4 md:p-8 space-y-8 pb-96 relative bg-[#F8FAFC] min-h-screen font-sans">
-      
-      {/* ================================================== */}
-      {/* MODAL / POPUP UX -> Risco de Alergia Encontrado */}
-      {/* ================================================== */}
+    <div className="relative min-h-screen bg-[#F8FAFC] px-4 pb-96 font-sans md:px-8">
       {showConfirmModal && (
-        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-[100] flex items-center justify-center p-6 animate-in fade-in duration-200">
-          <Card className="w-full max-w-sm border-none shadow-2xl rounded-[3rem] bg-white p-8 text-center space-y-8 animate-in zoom-in-95 duration-300">
-            {/* Visual Perigo Red */}
-            <div className="w-24 h-24 bg-red-100 rounded-full flex items-center justify-center mx-auto text-red-600 shadow-inner ring-[6px] ring-white">
-              <AlertTriangle size={48} strokeWidth={2.5} />
+        <div className="fixed inset-0 z-[130] flex items-center justify-center bg-slate-950/70 p-6 backdrop-blur-md">
+          <Card className="w-full max-w-sm rounded-[2rem] border-none bg-white p-8 text-center shadow-2xl">
+            <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-3xl bg-red-100 text-red-600">
+              <AlertTriangle size={40} strokeWidth={2.5} />
             </div>
-            <div>
-              <h3 className="text-2xl font-black text-slate-900 uppercase tracking-tighter">
-                Risco Detectado!
-              </h3>
-              <p className="text-slate-500 text-sm font-bold mt-3 leading-relaxed">
-                Temos indícios de que <span className="text-red-500 bg-red-50 px-2 py-0.5 rounded-md italic">"{newItem.name}"</span>{" "}
-                tem contaminação com <span className="font-black underline decoration-red-500 decoration-2 underline-offset-2">"{allergyConflict}"</span>.
-              </p>
-            </div>
-            
-            <div className="flex flex-col gap-3">
-              <Button
-                onClick={confirmAdd}
-                className="bg-red-600 hover:bg-red-700 active:scale-[0.98] transition-all h-14 rounded-[1.2rem] font-black text-white uppercase tracking-widest shadow-[0_8px_30px_rgb(239,68,68,0.3)]"
-              >
-                Ignorar e Adicionar
+            <h3 className="mt-6 text-2xl font-black tracking-tight text-slate-900">Risco detectado</h3>
+            <p className="mt-3 text-sm font-medium leading-relaxed text-slate-500">
+              O produto <strong className="text-red-600">{newItem.name}</strong> pode conter ingredientes relacionados à sua restrição de <strong>{allergyConflict}</strong>.
+            </p>
+            <div className="mt-7 grid gap-3">
+              <Button onClick={confirmAdd} disabled={savingItem} className="h-12 rounded-xl bg-red-600 font-black text-white hover:bg-red-700">
+                {savingItem ? "Adicionando..." : "Ignorar e adicionar"}
               </Button>
-              <button
-                onClick={() => setShowConfirmModal(false)}
-                className="text-slate-400 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 transition-colors font-black text-xs uppercase py-4 rounded-[1.2rem]"
-              >
-                Cancelar Inclusão
-              </button>
+              <Button variant="ghost" onClick={() => setShowConfirmModal(false)} className="h-12 rounded-xl font-black text-slate-500">
+                Cancelar inclusão
+              </Button>
             </div>
           </Card>
         </div>
       )}
 
-      {/* ================================================== */}
-      {/* HEADER: NOME DA LISTA E SINAL DE ESTOURO ORÇAMENTÁRIO */}
-      {/* ================================================== */}
-      <header className="flex justify-between items-end animate-in fade-in slide-in-from-top-4 duration-500 pt-8">
-        <div>
-          <h1 className="text-4xl font-black text-slate-900 tracking-tight leading-none">
-            {list.name}
-          </h1>
-          <p className="text-[10px] font-black text-blue-600 uppercase tracking-[0.2em] mt-3 bg-blue-100/50 inline-block px-3 py-1 rounded-md">
-            Organizado por Corredores Inteligentes
-          </p>
-        </div>
-        
-        {/* Se o dinheiro furou e existia limite, pisca a tag de perigo */}
-        {ultrapassouLimite && (
-          <div className="bg-gradient-to-r from-red-500 to-red-600 text-white px-3 py-2 rounded-xl text-[10px] font-black uppercase shadow-lg shadow-red-500/20 animate-pulse">
-            Teto Estourado
-          </div>
-        )}
-      </header>
+      <MarketComparisonModal
+        isOpen={comparisonOpen}
+        comparison={comparison}
+        loading={comparisonLoading}
+        error={comparisonError}
+        selectedMarkets={selectedMarkets}
+        onToggleMarket={toggleMarket}
+        onConfirm={() => openComparison(selectedMarkets)}
+        onClose={() => setComparisonOpen(false)}
+      />
 
-      {/* ================================================== */}
-      {/* CARD: ENTRADA INTELIGENTE DE PRODUTOS  */}
-      {/* O fundo deste card reage com a cor vermelha se detectar alergia */}
-      {/* ================================================== */}
-      <Card
-        className={`border-none shadow-[0_8px_30px_rgb(0,0,0,0.06)] rounded-[2.5rem] transition-all duration-500 animate-in fade-in slide-in-from-bottom-8 delay-100 ${
-          allergyConflict ? "bg-red-50 ring-2 ring-red-500 shadow-red-500/10" : "bg-white"
-        }`}
-      >
-        <CardContent className="p-6 md:p-8 space-y-5">
-          {/* Campo Nome. Ex: "Arroz..." */}
-          <div className="space-y-2">
-            <label className="text-[10px] font-black uppercase text-slate-400 ml-1 tracking-widest">
-              O que faltou ?
-            </label>
-            <Input
-              placeholder="Digite pra bater no motor..."
-              className={`h-16 rounded-[1.2rem] text-lg lg:text-xl font-bold border-transparent focus:bg-white focus:ring-4 transition-all shadow-inner ${allergyConflict ? "bg-white text-red-600 focus:ring-red-200" : "bg-slate-50 text-slate-900 focus:ring-blue-100"}`}
-              value={newItem.name}
-              onChange={(e) => setNewItem({ ...newItem, name: e.target.value })}
-            />
+      <div className="mx-auto max-w-3xl space-y-7 pt-8">
+        <header className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-600">Lista de compras</p>
+            <h1 className="mt-1 text-4xl font-black leading-none tracking-tight text-slate-900">{list.name}</h1>
+            <p className="mt-3 text-sm font-semibold text-slate-500">Pesquise os produtos e confirme para ver o menor custo por mercado.</p>
           </div>
-          
-          <div className="flex gap-4">
-            {/* Campo Valor em R$ Ex: "5,99" */}
-            <div className="relative flex-[2.5]">
-              <span className={`absolute left-4 top-1/2 -translate-y-1/2 font-black ${allergyConflict ? "text-red-400" : "text-slate-400"}`}>
-                R$
-              </span>
-              <Input
-                placeholder="0,00"
-                className={`border-transparent h-14 rounded-[1.2rem] pl-12 text-lg font-bold shadow-inner focus:bg-white transition-all ${allergyConflict ? "bg-white focus:ring-red-200 text-red-600" : "bg-slate-50 focus:ring-blue-100"}`}
-                value={newItem.price}
-                onChange={(e) =>
-                  setNewItem({
-                    ...newItem,
-                    // RegEx que não deixa humano digitar letras em campo de preço.
-                    price: e.target.value.replace(/[^0-9,.]/g, ""),
-                  })
-                }
-              />
-            </div>
-            
-            {/* Campo Incremento + e - 1, com visualização */}
-            <div className={`flex items-center rounded-[1.2rem] px-2 gap-4 h-14 flex-[1.5] justify-between shadow-inner ${allergyConflict ? "bg-white" : "bg-slate-50"}`}>
-              <button
-                onClick={() =>
-                  setNewItem({
-                    ...newItem,
-                    quantity: Math.max(1, newItem.quantity - 1),
-                  })
-                }
-                className={`w-10 h-10 flex items-center justify-center rounded-lg transition-colors ${allergyConflict ? "text-red-500 hover:bg-red-50" : "text-blue-600 hover:bg-blue-100"}`}
-              >
-                <Minus size={20} strokeWidth={3} />
-              </button>
-              <span className={`font-black text-xl truncate ${allergyConflict ? "text-red-600" : "text-slate-700"}`}>
-                {newItem.quantity}
-              </span>
-              <button
-                onClick={() =>
-                  setNewItem({ ...newItem, quantity: newItem.quantity + 1 })
-                }
-                className={`w-10 h-10 flex items-center justify-center rounded-lg transition-colors ${allergyConflict ? "text-red-500 hover:bg-red-50" : "text-blue-600 hover:bg-blue-100"}`}
-              >
-                <Plus size={20} strokeWidth={3} />
-              </button>
-            </div>
-          </div>
-          
           <Button
-            onClick={handleAddAttempt}
-            className={`w-full h-16 rounded-[1.2rem] font-black text-lg sm:text-xl tracking-wide shadow-xl active:scale-[0.98] transition-all duration-300 ${
-              allergyConflict
-                ? "bg-gradient-to-r from-red-600 to-red-500 shadow-red-500/30 hover:from-red-700 hover:to-red-600 text-white"
-                : "bg-gradient-to-r from-blue-700 to-blue-500 shadow-blue-500/30 hover:from-blue-800 hover:to-blue-600 text-white"
-            }`}
+            type="button"
+            onClick={() => openComparison()}
+            disabled={items.length === 0}
+            className="h-12 rounded-2xl bg-slate-900 px-5 font-black text-white shadow-lg shadow-slate-900/15 hover:bg-slate-800 disabled:opacity-50"
           >
-            {allergyConflict ? "VER ALERTA DETECTADO" : "Adicionar à Cesta"}
+            <Store className="mr-2" size={18} /> Comparar preços
           </Button>
-        </CardContent>
-      </Card>
+        </header>
 
-      {/* ================================================== */}
-      {/* SESSÃO: CORREDORES RENDERIZADOS */}
-      {/* O React vai varrer todo map de categorias (Açougue, Frios, Higiene...) */}
-      {/* e colocar os itens daquele corredor para agrupar e guiar a pessoa no super. */}
-      {/* ================================================== */}
-      <div className="space-y-12 animate-in fade-in slide-in-from-bottom-12 duration-700 delay-200">
-        
-        {/* Usamos Object.keys de CATEGORY_MAP + "Outros" nativamente */}
-        {Object.keys(CATEGORY_MAP)
-          .concat("Outros")
-          .map((categoryName) => {
-            
-            // FILTRA: Da lista inteira de itens (da api), os que são deste bendito laço.
-            const categoryItems = items.filter((item) => {
-              const itemCat = item.category || getCategory(item.name);
-              return itemCat === categoryName;
-            });
-
-            // Se O cara não botou nenhuma carne, não vou desenhar o "AÇOUGUE" limpo e vazio.
-            // Eu pulo.
-            if (categoryItems.length === 0) return null;
-
-            return (
-              <div key={categoryName} className="space-y-5">
-                
-                {/* Título do "Corredor do Supermercado" Premium Layout */}
-                <div className="flex items-center gap-3 px-2">
-                  <div className="h-6 w-1.5 bg-gradient-to-b from-blue-600 to-blue-400 rounded-full"></div>
-                  <h2 className="text-[13px] font-black text-slate-500 uppercase tracking-[0.2em]">
-                    {categoryName}
-                  </h2>
-                  <span className="text-[10px] font-black text-slate-400 bg-slate-200/50 px-2.5 py-1 rounded-md shadow-inner">
-                    {categoryItems.length} un
-                  </span>
+        <Card className={`rounded-[2rem] border-none shadow-[0_8px_30px_rgb(0,0,0,0.06)] ${allergyConflict ? "bg-red-50 ring-2 ring-red-400" : "bg-white"}`}>
+          <CardContent className="p-5 md:p-7">
+            <form onSubmit={handleAddAttempt} className="space-y-4">
+              <div className="relative">
+                <label className="mb-2 block pl-1 text-[10px] font-black uppercase tracking-widest text-slate-400">Pesquisar produto</label>
+                <div className="relative">
+                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={19} />
+                  <Input
+                    value={newItem.name}
+                    onChange={(event) => handleNameChange(event.target.value)}
+                    onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+                    placeholder="Ex.: arroz, leite, detergente..."
+                    className={`h-14 rounded-2xl border-transparent bg-slate-50 pl-12 pr-12 text-base font-bold shadow-inner focus:bg-white ${allergyConflict ? "text-red-700 focus:ring-red-200" : "focus:ring-blue-100"}`}
+                    autoComplete="off"
+                  />
+                  {searching && <Loader2 className="absolute right-4 top-1/2 -translate-y-1/2 animate-spin text-blue-600" size={18} />}
                 </div>
 
-                {/* Itens pertencentes a essa categoria */}
-                <div className="space-y-3">
-                  {categoryItems.map((item) => (
-                    // Esse Card de Item reage (fica pálido) se `item.checked` for TRUE (O cara jogou fisicamente no carrinho dele e ticou).
-                    <div
-                      key={item._id}
-                      className={`flex items-center justify-between p-5 rounded-[1.5rem] border transition-all duration-300 group ${
-                        item.checked
-                          ? "bg-slate-100/50 opacity-50 border-transparent shadow-none grayscale-[0.5]"
-                          : "bg-white shadow-[0_8px_30px_rgb(0,0,0,0.03)] border-transparent hover:shadow-[0_8px_30px_rgb(59,130,246,0.1)] hover:border-blue-100"
-                      }`}
-                    >
-                      <div className="flex items-center gap-5">
-                        
-                        {/* O Checkbox que dispara a API para salvar o CHECK */}
-                        <div className={`p-1 rounded-xl transition-colors ${item.checked ? "bg-slate-200" : "bg-blue-50 group-hover:bg-blue-100"}`}>
-                           <Checkbox
-                            checked={item.checked}
-                            onCheckedChange={() =>
-                              toggleItemStatus(list._id, item._id)
-                            }
-                            className="w-6 h-6 rounded-lg pointer-events-auto"
-                          />
-                        </div>
-                        
-                        <div>
-                          {/* Nome e Formatação de Texto se tiver Checked. */}
-                          <p
-                            className={`font-black text-lg transition-all ${
-                              item.checked
-                                ? "line-through text-slate-400"
-                                : "text-slate-800"
-                            }`}
-                          >
-                            {item.name}
-                          </p>
-                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                            {item.quantity} un × R${" "}
-                            {Number(item.price).toFixed(2).replace(".", ",")}
-                          </p>
-                        </div>
-                      </div>
-                      
-                      <div className="flex items-center gap-5">
-                        <span className={`font-black text-lg transition-colors ${item.checked ? "text-slate-400": "text-slate-800"}`}>
-                          R${" "}
-                          {(Number(item.price) * Number(item.quantity))
-                            .toFixed(2)
-                            .replace(".", ",")}
+                {showSuggestions && suggestions.length > 0 && (
+                  <div className="absolute left-0 right-0 top-full z-30 mt-2 overflow-hidden rounded-2xl border border-slate-100 bg-white p-2 shadow-2xl">
+                    {suggestions.map((product) => (
+                      <button
+                        key={`${product.source}-${product.id}`}
+                        type="button"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => chooseSuggestion(product)}
+                        className="flex w-full items-center justify-between gap-4 rounded-xl px-3 py-3 text-left transition hover:bg-blue-50"
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-black text-slate-800">{product.name}</span>
+                          <span className="mt-1 block text-[10px] font-bold uppercase tracking-widest text-slate-400">{product.market}{product.unit ? ` · ${product.unit}` : ""}</span>
                         </span>
-                        
-                        {/* Botão Clicavel da LLICHEIRA pra explodir o item da DB */}
-                        <button
-                          onClick={() => deleteItem(list._id, item._id)}
-                          className="w-10 h-10 flex items-center justify-center rounded-xl text-slate-200 hover:text-red-500 hover:bg-red-50 transition-colors"
-                        >
-                          <Trash2 size={20} strokeWidth={2.5} />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                        <span className="shrink-0 text-sm font-black text-emerald-600">{displayPrice(product)}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
-            );
-          })}
+
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <div className="flex flex-1 items-center gap-2 rounded-2xl bg-slate-50 px-3 shadow-inner">
+                  <span className="px-2 text-[10px] font-black uppercase tracking-widest text-slate-400">Qtd.</span>
+                  <button type="button" onClick={() => setNewItem((current) => ({ ...current, quantity: Math.max(1, current.quantity - 1) }))} className="flex h-10 w-10 items-center justify-center rounded-xl text-blue-600 transition hover:bg-blue-100" aria-label="Diminuir quantidade"><Minus size={18} strokeWidth={3} /></button>
+                  <span className="min-w-8 text-center text-lg font-black text-slate-800">{newItem.quantity}</span>
+                  <button type="button" onClick={() => setNewItem((current) => ({ ...current, quantity: current.quantity + 1 }))} className="flex h-10 w-10 items-center justify-center rounded-xl text-blue-600 transition hover:bg-blue-100" aria-label="Aumentar quantidade"><Plus size={18} strokeWidth={3} /></button>
+                </div>
+                <Button type="submit" disabled={savingItem || !newItem.name.trim()} className="h-14 rounded-2xl bg-blue-600 px-6 font-black text-white shadow-lg shadow-blue-600/20 hover:bg-blue-700 disabled:opacity-50">
+                  {savingItem ? "Adicionando..." : <><Plus className="mr-2" size={18} /> Adicionar à lista</>}
+                </Button>
+              </div>
+              {newItem.productId && <p className="text-xs font-semibold text-emerald-700">Produto selecionado do catálogo: {formatCurrency(newItem.price)} por unidade.</p>}
+              {!newItem.productId && newItem.name.trim().length >= 2 && suggestions.length === 0 && !searching && <p className="text-xs font-semibold text-slate-400">Nenhum produto do catálogo selecionado. Você ainda pode adicionar o nome e comparar depois.</p>}
+            </form>
+          </CardContent>
+        </Card>
+
+        {comparison?.cheapestMarket && (
+          <button type="button" onClick={() => openComparison()} className="flex w-full items-center justify-between rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-left transition hover:bg-emerald-100">
+            <span className="flex items-center gap-3"><Store className="text-emerald-700" size={19} /><span><span className="block text-[10px] font-black uppercase tracking-widest text-emerald-700">Último comparativo</span><span className="font-black text-emerald-950">{comparison.cheapestMarket.market}</span></span></span>
+            <span className="text-lg font-black text-emerald-700">{formatCurrency(comparison.cheapestMarket.total)}</span>
+          </button>
+        )}
+
+        {comparisonError && !comparisonOpen && <div className="flex items-start gap-3 rounded-2xl bg-red-50 p-4 text-sm font-semibold text-red-700"><AlertCircle size={18} className="mt-0.5 shrink-0" />{comparisonError}<button type="button" onClick={() => setComparisonError("")} className="ml-auto"><X size={17} /></button></div>}
+
+        <div className="space-y-8">
+          {groupedItems.length === 0 ? (
+            <div className="rounded-[2rem] border border-dashed border-slate-200 bg-white/70 px-6 py-16 text-center">
+              <ShoppingBag className="mx-auto text-blue-300" size={44} />
+              <h2 className="mt-4 text-xl font-black text-slate-800">Sua lista está vazia</h2>
+              <p className="mx-auto mt-2 max-w-sm text-sm font-medium text-slate-500">Pesquise um produto acima, escolha uma sugestão e ajuste a quantidade antes de adicionar.</p>
+            </div>
+          ) : groupedItems.map(({ categoryName, items: categoryItems }) => (
+            <section key={categoryName} className="space-y-3">
+              <div className="flex items-center gap-3 px-2"><div className="h-6 w-1.5 rounded-full bg-gradient-to-b from-blue-600 to-blue-400" /><h2 className="text-xs font-black uppercase tracking-[0.2em] text-slate-500">{categoryName}</h2><span className="rounded-md bg-slate-200/60 px-2 py-1 text-[10px] font-black text-slate-400">{categoryItems.length}</span></div>
+              {categoryItems.map((item) => (
+                <div key={item._id} className={`flex flex-col gap-4 rounded-2xl border p-4 transition sm:flex-row sm:items-center sm:justify-between ${item.checked ? "border-transparent bg-slate-100/60 opacity-55" : "border-transparent bg-white shadow-[0_8px_30px_rgb(0,0,0,0.03)] hover:border-blue-100"}`}>
+                  <div className="flex min-w-0 items-center gap-4">
+                    <div className={`rounded-xl p-1 ${item.checked ? "bg-slate-200" : "bg-blue-50"}`}><Checkbox checked={item.checked} onCheckedChange={() => toggleItemStatus(list._id, item._id)} className="h-6 w-6 rounded-lg" /></div>
+                    <div className="min-w-0"><p className={`truncate text-base font-black ${item.checked ? "text-slate-400 line-through" : "text-slate-800"}`}>{item.name}</p><p className="mt-1 text-[10px] font-bold uppercase tracking-widest text-slate-400">{item.unit ? `${item.unit} · ` : ""}{item.productId ? "Catálogo" : "Preço a consultar"}</p></div>
+                  </div>
+                  <div className="flex items-center justify-between gap-4 sm:justify-end">
+                    <div className="flex items-center gap-2 rounded-xl bg-slate-50 px-2 py-1"><button type="button" onClick={() => changeQuantity(item, -1)} disabled={item.quantity <= 1} className="flex h-8 w-8 items-center justify-center rounded-lg text-blue-600 transition hover:bg-blue-100 disabled:opacity-30" aria-label={`Diminuir quantidade de ${item.name}`}><Minus size={16} strokeWidth={3} /></button><span className="min-w-6 text-center text-sm font-black text-slate-700">{item.quantity}</span><button type="button" onClick={() => changeQuantity(item, 1)} className="flex h-8 w-8 items-center justify-center rounded-lg text-blue-600 transition hover:bg-blue-100" aria-label={`Aumentar quantidade de ${item.name}`}><Plus size={16} strokeWidth={3} /></button></div>
+                    <span className={`min-w-24 text-right text-base font-black ${item.checked ? "text-slate-400" : "text-slate-800"}`}>{item.price > 0 ? formatCurrency(item.price * item.quantity) : "A consultar"}</span>
+                    <button type="button" onClick={() => deleteItem(list._id, item._id)} className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-300 transition hover:bg-red-50 hover:text-red-500" aria-label={`Remover ${item.name}`}><Trash2 size={18} /></button>
+                  </div>
+                </div>
+              ))}
+            </section>
+          ))}
+        </div>
       </div>
 
-      {/* ================================================== */}
-      {/* 4. BARRA DE STATUS INFERIOR (Floating Bottom Bar) */}
-      {/* Ela é fixed, fica o tempo inteiro mostrando se você tá milionário ou estourado. */}
-      {/* ================================================== */}
-      <div className="fixed bottom-[0px] md:bottom-[72px] left-0 right-0 bg-white/80 backdrop-blur-3xl border-t border-slate-100/50 px-6 py-6 z-40 shadow-[0_-20px_40px_rgba(0,0,0,0.06)] pb-10 md:pb-6 font-sans">
-        <div className="max-w-2xl mx-auto space-y-5">
-          
-          {/* Se a grana superou, um card em VERMELHO SALTA PARA FORA */}
-          {ultrapassouLimite && showWarning && (
-            <div className="flex items-center justify-between bg-gradient-to-r from-red-600 to-red-500 text-white p-4 rounded-2xl animate-in slide-in-from-bottom duration-500 shadow-xl shadow-red-500/20">
-              <div className="flex items-center gap-3">
-                <div className="bg-red-700/50 p-2 rounded-lg">
-                   <AlertCircle size={20} strokeWidth={3} />
-                </div>
-                <p className="text-[11px] font-black uppercase tracking-[0.2em] drop-shadow-sm">
-                  Cuidado: Teto furado!
-                </p>
-              </div>
-              <button onClick={() => setShowWarning(false)} className="hover:bg-red-700 p-2 rounded-lg transition-colors">
-                <X size={18} strokeWidth={3}/>
-              </button>
-            </div>
-          )}
-          
-          {/* Progress Bar de Preenchimento (% de produtos da lista já pegos) */}
-          <div className="space-y-3">
-            <div className="flex justify-between items-center font-black text-[10px] uppercase tracking-[0.2em] text-slate-400">
-              <span className="flex items-center gap-2">
-                <ShoppingBag size={14} className="text-blue-500" /> Marcados
-              </span>
-              <span className="bg-slate-100 px-2 py-0.5 rounded-md text-slate-500">
-                {itensMarcados} / {totalItens}
-              </span>
-            </div>
-            
-            {/* A Barra pintando gradualmente */}
-            <Progress
-              value={porcentagemItens}
-              className="h-3.5 bg-slate-100/80 [&>div]:bg-gradient-to-r [&>div]:from-blue-600 [&>div]:to-blue-400 rounded-full shadow-inner border border-slate-200/50"
-            />
-          </div>
-          
-          {/* Valores Reais $ Subtotal e Meta de Gasto */}
-          <div className="flex justify-between items-end pt-2">
-            <div>
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 italic">
-                Subtotal
-              </p>
-              <p
-                className={`text-4xl font-black leading-none tracking-tighter transition-colors drop-shadow-sm ${
-                  ultrapassouLimite ? "text-red-500" : "bg-gradient-to-r from-slate-900 to-slate-700 bg-clip-text text-transparent"
-                }`}
-              >
-                <span className={`text-base mr-1 ${ultrapassouLimite ? "text-red-400" : "text-slate-400"}`}>R$</span>
-                {totalGeral.toFixed(2).replace(".", ",")}
-              </p>
-            </div>
-            
-            <div className="text-right border-l-2 pl-6 border-slate-100/80">
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 italic">
-                Meta de Gasto
-              </p>
-              <div className="flex items-center gap-2 justify-end bg-slate-50 px-3 py-1.5 rounded-[1rem] border border-slate-100">
-                <Target
-                  size={18}
-                  className={
-                    valorLimite > 0 ? "text-blue-500" : "text-slate-300"
-                  }
-                  strokeWidth={2.5}
-                />
-                <p
-                  className={`text-xl font-black leading-none ${
-                    valorLimite > 0 ? "text-slate-700" : "text-slate-300"
-                  }`}
-                >
-                  R$ {valorLimite.toFixed(2).replace(".", ",")}
-                </p>
-              </div>
-            </div>
-          </div>
-
+      <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-slate-100 bg-white/85 px-5 py-5 shadow-[0_-20px_40px_rgba(0,0,0,0.06)] backdrop-blur-2xl md:bottom-[72px] md:px-8">
+        <div className="mx-auto max-w-3xl space-y-4">
+          {overBudget && showWarning && <div className="flex items-center justify-between rounded-2xl bg-red-600 p-3 text-white shadow-lg shadow-red-500/20"><span className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest"><AlertCircle size={17} /> Limite de orçamento ultrapassado</span><button type="button" onClick={() => setShowWarning(false)}><X size={17} /></button></div>}
+          <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-slate-400"><span className="flex items-center gap-2"><Check size={15} className="text-blue-500" /> Itens marcados</span><span className="rounded-md bg-slate-100 px-2 py-1 text-slate-500">{checkedItems} / {totalItems}</span></div>
+          <Progress value={progress} className="h-3 rounded-full bg-slate-100 [&>div]:bg-gradient-to-r [&>div]:from-blue-600 [&>div]:to-blue-400" />
+          <div className="flex items-end justify-between gap-5"><div><p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Subtotal informado</p><p className={`mt-1 text-3xl font-black tracking-tight ${overBudget ? "text-red-500" : "text-slate-900"}`}>{formatCurrency(total)}</p></div><div className="text-right"><p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Meta</p><p className="mt-1 text-lg font-black text-slate-600">{budget > 0 ? formatCurrency(budget) : "Sem limite"}</p></div></div>
         </div>
       </div>
     </div>

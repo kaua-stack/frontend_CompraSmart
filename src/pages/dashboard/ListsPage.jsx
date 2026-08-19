@@ -32,20 +32,33 @@ export default function ListsPage() {
   // STADOS do Formulário de Criação -> Para "guardar" o que a pessoa digita antes de salvar.
   const [name, setName] = useState("");
   const [budget, setBudget] = useState("");
+  const [error, setError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // =========================================================================
   // Função p/ CHamar o backend e criar lista passando pelas regras
   // =========================================================================
   const handleCreate = async (e) => {
     e.preventDefault();
-    if (!name.trim()) return; // não criar lixo/vazio no banco.
-    
-    // Chama o contexto de Listas (que debaixo dos panos chama a API do backend).
-    const newList = await addList(name, budget);
-    if (newList) {
-      setName("");
-      setBudget("");
-      setShowModal(false); // Esconde o popup assim que a internet confirmar
+    if (!name.trim() || isSubmitting) return;
+
+    setError("");
+    setIsSubmitting(true);
+    try {
+      // Chama o contexto de Listas, que persiste a lista em POST /api/lists.
+      const newList = await addList(name.trim(), budget);
+      if (newList) {
+        setName("");
+        setBudget("");
+        setShowModal(false);
+      }
+    } catch (requestError) {
+      setError(
+        requestError.response?.data?.error ||
+          "Não foi possível criar a lista. Verifique se o backend está ativo e se você está autenticado.",
+      );
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -83,7 +96,11 @@ export default function ListsPage() {
         Comece organizando suas futuras compras aqui.
       </p>
       <Button
-        onClick={() => setShowModal(true)}
+        type="button"
+        onClick={() => {
+          setError("");
+          setShowModal(true);
+        }}
         className="mt-8 bg-blue-600 hover:bg-blue-700 hover:scale-105 transition-all text-white rounded-2xl px-8 h-12 font-black shadow-lg shadow-blue-600/30"
       >
         <Plus className="mr-2 w-5 h-5" /> CRIAR LISTA
@@ -109,7 +126,11 @@ export default function ListsPage() {
         
         {/* Botão de NOVA LISTA no topo */}
         <Button
-          onClick={() => setShowModal(true)}
+          type="button"
+          onClick={() => {
+            setError("");
+            setShowModal(true);
+          }}
           className="rounded-[1.2rem] bg-slate-900 hover:bg-slate-800 hover:-translate-y-0.5 transition-all h-12 px-5 font-black shadow-lg shadow-slate-200 text-white"
         >
           <Plus className="mr-1 w-5 h-5" /> Criar
@@ -192,6 +213,11 @@ export default function ListsPage() {
 
               {/* O Formulario envia os dados para a funcao handleCreate */}
               <form onSubmit={handleCreate} className="space-y-6 flex flex-col">
+                {error && (
+                  <div className="rounded-xl bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+                    {error}
+                  </div>
+                )}
                 <div className="space-y-2">
                   <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">
                     Como se chama?
@@ -225,9 +251,10 @@ export default function ListsPage() {
                 </div>
                 <Button
                   type="submit"
+                  disabled={isSubmitting}
                   className="w-full h-14 rounded-[1.2rem] bg-blue-600 hover:bg-blue-700 hover:scale-[1.02] active:scale-95 transition-all font-black text-lg text-white shadow-lg shadow-blue-600/30 mt-2"
                 >
-                  Salvar
+                  {isSubmitting ? "Criando..." : "Salvar"}
                 </Button>
               </form>
             </CardContent>

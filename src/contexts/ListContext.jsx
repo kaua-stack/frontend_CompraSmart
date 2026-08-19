@@ -1,170 +1,106 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import api from "../services/api";
 import { useAuth } from "./AuthContext";
 
-// Cria o contexto para as Listas de Compras
-const ListContext = createContext();
+const ListContext = createContext(null);
 
-// Provedor que envolve o aplicativo e disponibiliza as funções de lista para todos os componentes
+function replaceList(previousLists, updatedList) {
+  return previousLists.map((list) =>
+    String(list._id || list.id) === String(updatedList._id || updatedList.id)
+      ? updatedList
+      : list,
+  );
+}
+
 export const ListProvider = ({ children }) => {
-  const [lists, setLists] = useState([]); // Estado que guarda todas as listas do usuário
-  const { userToken } = useAuth(); // Pega o token do contexto de Autenticação
+  const [lists, setLists] = useState([]);
+  const { userToken } = useAuth();
 
-  // 1. BUSCAR LISTAS DO BACKEND
-  const fetchLists = async () => {
-    if (!userToken) return;
-    try {
-      // Faz uma chamada GET para buscar as listas do usuário autenticado
-      const response = await fetch("http://127.0.0.1:5000/api/lists", {
-        headers: { Authorization: `Bearer ${userToken}` },
-      });
-      const data = await response.json();
-      if (response.ok) setLists(data); // Atualiza o estado com as listas recebidas
-    } catch (err) {
-      console.error("Erro ao buscar listas:", err);
+  const fetchLists = useCallback(async () => {
+    if (!userToken) {
+      setLists([]);
+      return [];
     }
-  };
 
-  // Efeito que busca as listas toda vez que o usuário loga (quando o token muda)
-  useEffect(() => {
-    if (userToken) fetchLists();
+    const { data } = await api.get("/api/lists");
+    setLists(Array.isArray(data) ? data : []);
+    return data;
   }, [userToken]);
 
-  // 2. CRIAR NOVA LISTA
+  useEffect(() => {
+    fetchLists().catch((error) => {
+      console.error("Erro ao buscar listas:", error);
+      setLists([]);
+    });
+  }, [fetchLists]);
+
   const addList = async (listName, budgetValue = 0) => {
-    try {
-      // Converte o valor do orçamento para número (trata vírgula como ponto)
-      const sanitizedBudget =
-        Number(budgetValue.toString().replace(",", ".")) || 0;
-        
-      const response = await fetch("http://127.0.0.1:5000/api/lists", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${userToken}`,
-        },
-        body: JSON.stringify({
-          name: listName,
-          budget: sanitizedBudget,
-        }),
-      });
-
-      if (response.ok) {
-        const newList = await response.json();
-        // Adiciona a nova lista no topo do estado atual (sem precisar recarregar tudo)
-        setLists((prev) => [newList, ...prev]);
-        return newList;
-      }
-    } catch (err) {
-      console.error("Erro ao criar lista:", err);
-      return null;
-    }
+    const { data } = await api.post("/api/lists", {
+      name: listName,
+      budget: Number(String(budgetValue).replace(",", ".")) || 0,
+    });
+    setLists((previousLists) => [data, ...previousLists]);
+    return data;
   };
 
-  // 3. EXCLUIR UMA LISTA COMPLETA
   const deleteFullList = async (listId) => {
-    try {
-      const response = await fetch(
-        `http://127.0.0.1:5000/api/lists/${listId}`,
-        {
-          method: "DELETE",
-          headers: {
-            Authorization: `Bearer ${userToken}`,
-          },
-        }
-      );
-
-      if (response.ok) {
-        // Remove a lista do estado local filtrando pelo ID
-        setLists((prev) => prev.filter((l) => l._id !== listId));
-        return true;
-      }
-    } catch (err) {
-      console.error("Erro ao excluir lista completa:", err);
-      return false;
-    }
+    await api.delete(`/api/lists/${listId}`);
+    setLists((previousLists) =>
+      previousLists.filter((list) => String(list._id || list.id) !== String(listId)),
+    );
+    return true;
   };
 
-  // 4. ADICIONAR ITEM DENTRO DE UMA LISTA
+  const searchProducts = async (query, limit = 12) => {
+    const normalizedQuery = String(query || "").trim();
+    if (normalizedQuery.length < 2) return [];
+    const { data } = await api.get("/api/products/search", {
+      params: { q: normalizedQuery, limit },
+    });
+    return Array.isArray(data) ? data : [];
+  };
+
   const addItemToList = async (listId, itemData) => {
-    try {
-      const response = await fetch(
-        `http://127.0.0.1:5000/api/lists/${listId}/items`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${userToken}`,
-          },
-          body: JSON.stringify({
-            name: itemData.name,
-            quantity: Number(itemData.quantity) || 1,
-            price: Number(itemData.price) || 0,
-          }),
-        }
-      );
-      if (response.ok) {
-        const updatedList = await response.json();
-        // Atualiza apenas a lista que recebeu o novo item no estado global
-        setLists((prev) =>
-          prev.map((l) => (l._id === listId ? updatedList : l))
-        );
-        return updatedList;
-      }
-    } catch (err) {
-      console.error("Erro ao adicionar item:", err);
-    }
+    const { data } = await api.post(`/api/lists/${listId}/items`, {
+      name: itemData.name,
+      productId: itemData.productId || null,
+      quantity: Number(itemData.quantity) || 1,
+      price: itemData.price === "" ? null : Number(String(itemData.price).replace(",", ".")),
+      category: itemData.category || null,
+      unit: itemData.unit || null,
+    });
+    setLists((previousLists) => replaceList(previousLists, data));
+    return data;
   };
 
-  // 5. MARCAR/DESMARCAR ITEM (CHECKBOX)
+  const updateItemQuantity = async (listId, itemId, quantity) => {
+    const safeQuantity = Math.max(1, Number(quantity) || 1);
+    const { data } = await api.patch(`/api/lists/${listId}/items/${itemId}`, {
+      quantity: safeQuantity,
+    });
+    setLists((previousLists) => replaceList(previousLists, data));
+    return data;
+  };
+
   const toggleItemStatus = async (listId, itemId) => {
-    try {
-      const response = await fetch(
-        `http://127.0.0.1:5000/api/lists/${listId}/items/${itemId}`,
-        {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${userToken}`,
-          },
-        }
-      );
-      if (response.ok) {
-        const updatedList = await response.json();
-        // Atualiza a lista com o novo estado do item
-        setLists((prev) =>
-          prev.map((l) => (l._id === listId ? updatedList : l))
-        );
-      }
-    } catch (error) {
-      console.error("Erro ao alternar status:", error);
-    }
+    const { data } = await api.patch(`/api/lists/${listId}/items/${itemId}`);
+    setLists((previousLists) => replaceList(previousLists, data));
+    return data;
   };
 
-  // 6. DELETAR ITEM DE UMA LISTA
   const deleteItem = async (listId, itemId) => {
-    try {
-      const response = await fetch(
-        `http://127.0.0.1:5000/api/lists/${listId}/items/${itemId}`,
-        {
-          method: "DELETE",
-          headers: {
-            Authorization: `Bearer ${userToken}`,
-          },
-        }
-      );
-      if (response.ok) {
-        const updatedList = await response.json();
-        // Atualiza a lista removendo o item do estado
-        setLists((prev) =>
-          prev.map((l) => (l._id === listId ? updatedList : l))
-        );
-      }
-    } catch (error) {
-      console.error("Erro ao deletar item:", error);
-    }
+    const { data } = await api.delete(`/api/lists/${listId}/items/${itemId}`);
+    setLists((previousLists) => replaceList(previousLists, data));
+    return data;
   };
 
-  // Exporta o estado e todas as funções para serem usadas nos componentes
+  const compareList = async (listId, markets = []) => {
+    const { data } = await api.post(`/api/lists/${listId}/compare`, {
+      markets,
+    });
+    return data;
+  };
+
   return (
     <ListContext.Provider
       value={{
@@ -172,9 +108,12 @@ export const ListProvider = ({ children }) => {
         addList,
         deleteFullList,
         fetchLists,
+        searchProducts,
         addItemToList,
+        updateItemQuantity,
         toggleItemStatus,
         deleteItem,
+        compareList,
       }}
     >
       {children}
@@ -182,5 +121,4 @@ export const ListProvider = ({ children }) => {
   );
 };
 
-// Hook personalizado para usar o contexto de listas facilmente
 export const useLists = () => useContext(ListContext);

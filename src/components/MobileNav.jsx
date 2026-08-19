@@ -31,21 +31,30 @@ export default function MobileNav() {
   const [showModal, setShowModal] = useState(false);
   const [name, setName] = useState("");
   const [budget, setBudget] = useState("");
+  const [error, setError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleCreate = async (e) => {
     e.preventDefault();
-    if (!name.trim()) return;
+    if (!name.trim() || isSubmitting) return;
 
-    // IMPORTANTE: Passar o name e o budget para a função
-    const newList = await addList(name, budget);
-
-    if (newList && newList._id) {
-      setName("");
-      setBudget("");
-      setShowModal(false);
-      navigate(`/dashboard/lists/${newList._id}`);
-    } else {
-      alert("Erro ao criar lista! Verifique se seu backend Python está ativo.");
+    setError("");
+    setIsSubmitting(true);
+    try {
+      const newList = await addList(name.trim(), budget);
+      if (newList && newList._id) {
+        setName("");
+        setBudget("");
+        setShowModal(false);
+        navigate(`/dashboard/lists/${newList._id}`);
+      }
+    } catch (requestError) {
+      setError(
+        requestError.response?.data?.error ||
+          "Não foi possível criar a lista. Verifique se o backend está ativo e se você está autenticado.",
+      );
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -90,7 +99,11 @@ export default function MobileNav() {
 
         {/* Botão Flutuante Central */}
         <Button
-          onClick={() => setShowModal(true)}
+          type="button"
+          onClick={() => {
+            setError("");
+            setShowModal(true);
+          }}
           className="absolute -top-6 left-1/2 transform -translate-x-1/2 bg-blue-600 hover:bg-blue-700 w-14 h-14 rounded-2xl shadow-lg shadow-blue-200 border-4 border-white active:scale-90 transition-all z-50 p-0"
         >
           <Plus className="w-8 h-8 text-white" strokeWidth={3} />
@@ -115,6 +128,11 @@ export default function MobileNav() {
               </div>
 
               <form onSubmit={handleCreate} className="space-y-5">
+                {error && (
+                  <div className="rounded-xl bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+                    {error}
+                  </div>
+                )}
                 <div className="space-y-2">
                   <label className="text-[10px] font-black uppercase text-slate-400 ml-1 italic">
                     Nome da Lista
@@ -148,9 +166,10 @@ export default function MobileNav() {
 
                 <Button
                   type="submit"
+                  disabled={isSubmitting || !name.trim()}
                   className="w-full h-14 rounded-2xl bg-blue-600 hover:bg-blue-700 font-black text-lg shadow-lg shadow-blue-100 mt-2"
                 >
-                  Criar Agora
+                  {isSubmitting ? "Criando..." : "Criar Agora"}
                 </Button>
               </form>
             </CardContent>

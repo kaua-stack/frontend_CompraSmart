@@ -3,6 +3,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import api from "@/services/api";
 
 export function RegisterForm() {
   // Estados para capturar os dados do novo usuário
@@ -21,50 +22,26 @@ export function RegisterForm() {
     setError(null);
 
     try {
-      const response = await fetch("http://127.0.0.1:5000/user", {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          user_name: name,
-          user_email: email,
-          user_password: password,
-        }),
+      await api.post("/user", {
+        user_name: name,
+        user_email: email,
+        user_password: password,
       });
 
-      const data = await response.json();
+      const { data: loginData } = await api.post("/login", {
+        user_email: email,
+        user_password: password,
+      });
 
-      if (response.ok) {
-        const loginResponse = await fetch("http://127.0.0.1:5000/login", {
-          method: "POST",
-          credentials: "include",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            user_email: email,
-            user_password: password,
-          }),
-        });
-
-        const loginData = await loginResponse.json();
-
-        if (!loginResponse.ok || !loginData.accessToken) {
-          navigate("/dashboard", { replace: true });
-          return;
-        }
-
-        login(loginData.accessToken, name);
-        navigate("/dashboard", { replace: true });
-      } else {
-        setError(data.error || data.message || "Falha ao cadastrar. Tente novamente.");
+      if (!loginData?.accessToken) {
+        setError("A conta foi criada, mas o servidor não retornou um token válido.");
+        return;
       }
+
+      login(loginData.accessToken, name);
+      navigate("/dashboard", { replace: true });
     } catch (err) {
-      setError(
-        "Erro de conexão com o servidor. Verifique se o backend está ativo."
-      );
+      setError(err.response?.data?.error || "Erro de conexão com o servidor. Verifique se o backend está ativo.");
     }
   };
 

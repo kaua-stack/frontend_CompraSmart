@@ -3,6 +3,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import api from "@/services/api";
 
 export function LoginForm() {
   // Estados para controlar o que o usuário digita nos campos
@@ -29,21 +30,12 @@ export function LoginForm() {
     setIsLoading(true);
 
     try {
-      const response = await fetch("http://127.0.0.1:5000/login", {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          user_email: email,
-          user_password: password,
-        }),
+      const { data } = await api.post("/login", {
+        user_email: email,
+        user_password: password,
       });
 
-      const data = await response.json();
-
-      if (response.ok) {
+      if (data) {
         if (data.accessToken) {
           const userName = email.split("@")[0] || "Usuário";
           login(data.accessToken, userName);
@@ -51,12 +43,9 @@ export function LoginForm() {
         } else {
           setError("O servidor não retornou um token válido.");
         }
-      } else {
-        setError(data.error || data.message || "E-mail ou senha incorretos.");
       }
     } catch (err) {
-      console.error("Erro no login:", err);
-      setError("Não foi possível conectar ao servidor.");
+      setError(err.response?.data?.error || "Não foi possível conectar ao servidor.");
     } finally {
       setIsLoading(false);
     }
